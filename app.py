@@ -185,88 +185,169 @@ def descifrar(cifrado, clave, nk):
         raise ValueError("La contraseña es incorrecta o el mensaje fue alterado.")
     return quitar_relleno(datos)
 
-# --- SALAS DE CHAT (cada contraseña es una sala independiente) ---
-historial_salas = {}
+# --- ESTADO GLOBAL ---
+CLAVE_GENERAL = "general"
+historial_general = []
+usuarios_general = set()
+salas_privadas = {}
 
-def obtener_historial(contrasena):
-    return historial_salas.setdefault(contrasena, [])
-
-def formatear_historial(contrasena, variante="AES-128"):
-    if not contrasena:
-        return "Escribe una contraseña para ver los mensajes de la sala."
-    
-    historial = obtener_historial(contrasena)
-    if not historial:
-        return "No hay mensajes aún en esta sala."
-    
-    nk = {"AES-128": 4, "AES-192": 6, "AES-256": 8}[variante]
-    clave = hashlib.sha256(contrasena.encode()).digest()[:nk*4]
+def formatear_general():
+    if not historial_general:
+        return "💬 Aún no hay mensajes. ¡Sé el primero en escribir!"
+    clave_aes = hashlib.sha256(CLAVE_GENERAL.encode()).digest()[:32]
     lineas = []
-    
-    for msg in historial:
-        lineas.append(f"[{msg['hora']}] {msg['nombre']}:")
-        lineas.append(f"  Cifrado (hex): {msg['cifrado']}")
+    for msg in historial_general:
         try:
             cifrado_bytes = bytes.fromhex(msg['cifrado'])
-            descifrado = descifrar(cifrado_bytes, clave, nk)
-            lineas.append(f"  Descifrado: {descifrado.decode('utf-8', errors='replace')}")
+            descifrado = descifrar(cifrado_bytes, clave_aes, 8)
+            texto = descifrado.decode('utf-8', errors='replace')
+            lineas.append(f"**{msg['nombre']}** ({msg['hora']}):\n{texto}")
         except Exception:
-            pass
+            lineas.append(f"**{msg['nombre']}** ({msg['hora']}):\n`{msg['cifrado']}`")
         lineas.append("")
-    
     return "\n".join(lineas)
 
-def enviar_mensaje(nombre, mensaje, contrasena, variante):
-    if not nombre or not mensaje or not contrasena:
-        return "Escribe tu nombre, un mensaje y la contraseña.", formatear_historial(contrasena, variante)
+def formatear_privada(nombre_sala, clave_ingresada):
+    if nombre_sala not in salas_privadas:
+        return "🔒 La sala no existe."
+    sala = salas_privadas[nombre_sala]
+    if not sala["mensajes"]:
+        return "💬 Esta sala aún no tiene mensajes."
+    
+    clave_correcta = (clave_ingresada == sala["clave"])
+    clave_aes = hashlib.sha256(sala["clave"].encode()).digest()[:32] if clave_correcta else None
+    
+    lineas = []
+    for msg in sala["mensajes"]:
+        if clave_correcta:
+            try:
+                cifrado_bytes = bytes.fromhex(msg['cifrado'])
+                descifrado = descifrar(cifrado_bytes, clave_aes, 8)
+                texto = descifrado.decode('utf-8', errors='replace')
+                lineas.append(f"**{msg['nombre']}** ({msg['hora']}):\n{texto}")
+            except Exception:
+                lineas.append(f"**{msg['nombre']}** ({msg['hora']}):\n`{msg['cifrado']}`")
+        else:
+            lineas.append(f"**{msg['nombre']}** ({msg['hora']}):\n`{msg['cifrado']}`")
+        lineas.append("")
+    return "\n".join(lineas)
 
-    nk = {"AES-128": 4, "AES-192": 6, "AES-256": 8}[variante]
-    clave = hashlib.sha256(contrasena.encode()).digest()[:nk*4]
+def listar_privadas():
+    if not salas_privadas:
+        return "No hay salas privadas creadas aún."
+    lineas = []
+    for nombre, datos in salas_privadas.items():
+        lineas.append(f"🔒 **{nombre}** — Clave: `{datos['clave']}` — {len(datos['mensajes'])} mensajes")
+    return "\n".join(lineas)
+
+def enviar_general(nombre, mensaje):
+    if not nombre or not mensaje:
+        return "⚠️ Escribe tu nombre y un mensaje."
+    if nombre in usuarios_general:
+        return f"⚠️ El nombre '{nombre}' ya está en uso en el chat general."
     
-    cifrado = cifrar(mensaje.encode(), clave, nk)
-    hex_cifrado = cifrado.hex().upper()
-    
-    obtener_historial(contrasena).append({
+    clave_aes = hashlib.sha256(CLAVE_GENERAL.encode()).digest()[:32]
+    cifrado = cifrar(mensaje.encode(), clave_aes, 8)
+    historial_general.append({
         "nombre": nombre,
-        "cifrado": hex_cifrado,
-        "hora": time.strftime("%H:%M:%S")
+        "cifrado": cifrado.hex().upper(),
+        "hora": time.strftime("%H:%M")
     })
+    usuarios_general.add(nombre)
+    return "✅ Mensaje enviado."
+
+def crear_privada(nombre_sala, clave_sala):
+    if not nombre_sala or not clave_sala:
+        return "⚠️ Escribe un nombre y una clave para la sala."
+    if nombre_sala in salas_privadas:
+        return f"⚠️ La sala '{nombre_sala}' ya existe."
+    salas_privadas[nombre_sala] = {"clave": clave_sala, "mensajes": [], "usuarios": set()}
+    return f"✅ Sala '{nombre_sala}' creada."
+
+def enviar_privada(nombre_sala, nombre_usuario, mensaje, clave_sala):
+    if nombre_sala not in salas_privadas:
+        return "⚠️ La sala no existe."
+    if not nombre_usuario or not mensaje:
+        return "⚠️ Escribe tu nombre y un mensaje."
     
-    return "Mensaje enviado.", formatear_historial(contrasena, variante)
-
-def actualizar_chat(contrasena, variante):
-    return formatear_historial(contrasena, variante)
-
-with gr.Blocks(title="Chat AES") as demo:
-    gr.Markdown("# Chat Cifrado con AES\nCada contraseña crea una sala independiente. Solo quienes tengan la misma contraseña verán el texto claro; los demás solo verán el hexadecimal.")
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            nombre = gr.Textbox(label="Tu nombre")
-            contrasena = gr.Textbox(label="Contraseña de la sala", type="password")
-            variante = gr.Radio(["AES-128", "AES-192", "AES-256"], value="AES-128", label="Variante")
-            
-            gr.Markdown("---")
-            gr.Markdown("### Enviar mensaje")
-            mensaje = gr.Textbox(label="Mensaje", lines=3)
-            boton_enviar = gr.Button("Enviar mensaje cifrado", variant="primary")
-            estado = gr.Textbox(label="Estado", interactive=False)
-
-        with gr.Column(scale=2):
-            gr.Markdown("### Historial de la sala")
-            chat = gr.Textbox(label="Mensajes", lines=25, interactive=False)
-            boton_actualizar = gr.Button("Actualizar chat")
-
-    boton_enviar.click(
-        enviar_mensaje,
-        [nombre, mensaje, contrasena, variante],
-        [estado, chat]
-    )
+    sala = salas_privadas[nombre_sala]
+    if nombre_usuario in sala["usuarios"]:
+        return f"⚠️ El nombre '{nombre_usuario}' ya está en uso en esta sala."
     
-    boton_actualizar.click(
-        actualizar_chat,
-        [contrasena, variante],
-        [chat]
-    )
+    clave_aes = hashlib.sha256(sala["clave"].encode()).digest()[:32]
+    cifrado = cifrar(mensaje.encode(), clave_aes, 8)
+    
+    sala["mensajes"].append({
+        "nombre": nombre_usuario,
+        "cifrado": cifrado.hex().upper(),
+        "hora": time.strftime("%H:%M")
+    })
+    sala["usuarios"].add(nombre_usuario)
+    return "✅ Mensaje enviado."
+
+def ver_privada(nombre_sala, clave_ingresada):
+    return formatear_privada(nombre_sala, clave_ingresada)
+
+# --- INTERFAZ BONITA ---
+custom_css = """
+body { background-color: #f0f2f5; }
+.gradio-container { max-width: 900px; margin: auto; }
+h1 { color: #1a73e8; text-align: center; }
+.chat-box { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+"""
+
+with gr.Blocks(title="Chat Cifrado AES", css=custom_css) as demo:
+    gr.Markdown("# 💬 Chat Cifrado con AES\n*Los mensajes viajan cifrados. Solo quienes tengan la clave pueden leerlos.*")
+
+    with gr.Tabs():
+        # --- PESTAÑA GENERAL ---
+        with gr.Tab("🌍 Chat General"):
+            gr.Markdown("### Chat General\n*Todos ven el texto claro porque comparten la clave general.*")
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes="chat-box"):
+                    chat_gen = gr.Markdown(formatear_general(), elem_classes="chat-box")
+                with gr.Column(scale=1):
+                    nombre_gen = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo")
+                    mensaje_gen = gr.Textbox(label="Mensaje", lines=3, placeholder="Escribe algo...")
+                    boton_gen = gr.Button("Enviar 💬", variant="primary")
+                    estado_gen = gr.Markdown()
+
+            boton_gen.click(enviar_general, [nombre_gen, mensaje_gen], [estado_gen])
+            timer_gen = gr.Timer(3.0)
+            timer_gen.tick(formatear_general, [], [chat_gen])
+
+        # --- PESTAÑA PRIVADAS ---
+        with gr.Tab("🔒 Salas Privadas"):
+            gr.Markdown("### Salas Privadas\n*Cada sala tiene su clave. Solo quienes la conozcan ven el texto claro.*")
+            with gr.Row():
+                with gr.Column(scale=1, elem_classes="chat-box"):
+                    chat_priv = gr.Markdown("Selecciona una sala para ver sus mensajes.", elem_classes="chat-box")
+                with gr.Column(scale=1):
+                    gr.Markdown("#### Crear sala")
+                    nombre_crear = gr.Textbox(label="Nombre de la sala", placeholder="Ej. ProyectoX")
+                    clave_crear = gr.Textbox(label="Clave de la sala", placeholder="Ej. 1234")
+                    boton_crear = gr.Button("Crear sala ➕", variant="secondary")
+                    estado_crear = gr.Markdown()
+
+                    gr.Markdown("---")
+                    gr.Markdown("#### Salas disponibles")
+                    lista_privadas = gr.Markdown(listar_privadas())
+
+                    gr.Markdown("---")
+                    gr.Markdown("#### Entrar y enviar")
+                    nombre_entrar = gr.Textbox(label="Nombre de la sala", placeholder="Ej. ProyectoX")
+                    clave_entrar = gr.Textbox(label="Clave", placeholder="Ej. 1234", type="password")
+                    boton_ver = gr.Button("Ver mensajes 👀", variant="secondary")
+                    nombre_usuario = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo")
+                    mensaje_priv = gr.Textbox(label="Mensaje", lines=2, placeholder="Escribe algo...")
+                    boton_enviar_priv = gr.Button("Enviar a la sala 💬", variant="primary")
+                    estado_priv = gr.Markdown()
+
+            boton_crear.click(crear_privada, [nombre_crear, clave_crear], [estado_crear, lista_privadas])
+            boton_ver.click(ver_privada, [nombre_entrar, clave_entrar], [chat_priv])
+            boton_enviar_priv.click(enviar_privada, [nombre_entrar, nombre_usuario, mensaje_priv, clave_entrar], [estado_priv, lista_privadas])
+            timer_priv = gr.Timer(3.0)
+            timer_priv.tick(ver_privada, [nombre_entrar, clave_entrar], [chat_priv])
+            timer_priv.tick(listar_privadas, [], [lista_privadas])
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
