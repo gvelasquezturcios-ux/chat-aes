@@ -203,7 +203,7 @@ def formatear_general():
             texto = descifrado.decode('utf-8', errors='replace')
         except Exception:
             texto = msg['cifrado']
-        mensajes.append((msg['nombre'], texto))
+        mensajes.append({"role": "user", "content": f"**{msg['nombre']}**: {texto}"})
     return mensajes
 
 def formatear_privada(nombre_sala, clave_ingresada):
@@ -227,8 +227,13 @@ def formatear_privada(nombre_sala, clave_ingresada):
                 texto = msg['cifrado']
         else:
             texto = msg['cifrado']
-        mensajes.append((msg['nombre'], texto))
+        mensajes.append({"role": "user", "content": f"**{msg['nombre']}**: {texto}"})
     return mensajes
+
+def entrar_general(nombre):
+    if not nombre:
+        return gr.update(visible=True), gr.update(visible=False), "⚠️ Escribe tu nombre."
+    return gr.update(visible=False), gr.update(visible=True), f"✅ Bienvenido, {nombre}."
 
 def enviar_general(nombre, mensaje):
     if not nombre or not mensaje:
@@ -254,15 +259,22 @@ def crear_privada(nombre_sala, clave_sala):
     salas_privadas[nombre_sala] = {"clave": clave_sala, "mensajes": [], "usuarios": set()}
     return f"✅ Sala '{nombre_sala}' creada."
 
-def enviar_privada(nombre_sala, nombre_usuario, mensaje, clave_sala):
+def entrar_privada(nombre_sala, clave_sala):
     if nombre_sala not in salas_privadas:
-        return "⚠️ La sala no existe.", formatear_privada(nombre_sala, clave_sala)
+        return gr.update(visible=True), gr.update(visible=False), "⚠️ La sala no existe."
+    if clave_sala != salas_privadas[nombre_sala]["clave"]:
+        return gr.update(visible=True), gr.update(visible=False), "⚠️ Clave incorrecta."
+    return gr.update(visible=False), gr.update(visible=True), f"✅ Bienvenido a {nombre_sala}."
+
+def enviar_privada(nombre_sala, nombre_usuario, mensaje):
+    if nombre_sala not in salas_privadas:
+        return "⚠️ La sala no existe.", formatear_privada(nombre_sala, "")
     if not nombre_usuario or not mensaje:
-        return "⚠️ Escribe tu nombre y un mensaje.", formatear_privada(nombre_sala, clave_sala)
+        return "⚠️ Escribe tu nombre y un mensaje.", formatear_privada(nombre_sala, "")
     
     sala = salas_privadas[nombre_sala]
     if nombre_usuario in sala["usuarios"]:
-        return f"⚠️ El nombre '{nombre_usuario}' ya está en uso.", formatear_privada(nombre_sala, clave_sala)
+        return f"⚠️ El nombre '{nombre_usuario}' ya está en uso.", formatear_privada(nombre_sala, "")
     
     clave_aes = hashlib.sha256(sala["clave"].encode()).digest()[:32]
     cifrado = cifrar(mensaje.encode(), clave_aes, 8)
@@ -273,7 +285,7 @@ def enviar_privada(nombre_sala, nombre_usuario, mensaje, clave_sala):
         "hora": time.strftime("%H:%M")
     })
     sala["usuarios"].add(nombre_usuario)
-    return "", formatear_privada(nombre_sala, clave_sala)
+    return "", formatear_privada(nombre_sala, sala["clave"])
 
 def ver_privada(nombre_sala, clave_ingresada):
     return formatear_privada(nombre_sala, clave_ingresada)
@@ -282,7 +294,6 @@ custom_css = """
 body { background-color: #e5ddd5; }
 .gradio-container { max-width: 800px; margin: auto; }
 h1 { color: #075e54; text-align: center; font-family: 'Segoe UI', sans-serif; }
-.chat-window { background: #efeae2; border-radius: 12px; padding: 16px; min-height: 400px; }
 """
 
 with gr.Blocks(title="WhatsApp AES", css=custom_css) as demo:
@@ -292,16 +303,21 @@ with gr.Blocks(title="WhatsApp AES", css=custom_css) as demo:
         # --- PESTAÑA GENERAL ---
         with gr.Tab("🌍 General"):
             gr.Markdown("### Chat General\n*Todos ven el texto claro.*")
-            with gr.Row():
-                with gr.Column(scale=2):
-                    chat_gen = gr.Chatbot(label="Chat", height=400)
-                    nombre_gen = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo", scale=1)
-                    with gr.Row():
-                        mensaje_gen = gr.Textbox(label="Mensaje", placeholder="Escribe algo...", scale=4)
-                        boton_gen = gr.Button("Enviar", variant="primary", scale=1)
-                estado_gen = gr.Markdown()
-
-            boton_gen.click(enviar_general, [nombre_gen, mensaje_gen], [estado_gen, chat_gen])
+            
+            with gr.Group(visible=True) as grupo_nombre_gen:
+                nombre_gen = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo")
+                boton_entrar_gen = gr.Button("Entrar al chat", variant="primary")
+            
+            with gr.Group(visible=False) as grupo_chat_gen:
+                chat_gen = gr.Chatbot(label="Chat", height=400)
+                with gr.Row():
+                    mensaje_gen = gr.Textbox(label="Mensaje", placeholder="Escribe algo...", scale=4)
+                    boton_enviar_gen = gr.Button("Enviar", variant="primary", scale=1)
+            
+            estado_gen = gr.Markdown()
+            
+            boton_entrar_gen.click(entrar_general, [nombre_gen], [grupo_nombre_gen, grupo_chat_gen, estado_gen])
+            boton_enviar_gen.click(enviar_general, [nombre_gen, mensaje_gen], [estado_gen, chat_gen])
             mensaje_gen.submit(enviar_general, [nombre_gen, mensaje_gen], [estado_gen, chat_gen])
             timer_gen = gr.Timer(3.0)
             timer_gen.tick(formatear_general, [], [chat_gen])
@@ -309,25 +325,31 @@ with gr.Blocks(title="WhatsApp AES", css=custom_css) as demo:
         # --- PESTAÑA PRIVADAS ---
         with gr.Tab("🔒 Salas Privadas"):
             gr.Markdown("### Salas Privadas\n*Cada sala tiene su clave.*")
-            with gr.Row():
-                with gr.Column(scale=2):
-                    chat_priv = gr.Chatbot(label="Chat de la sala", height=400)
-                    nombre_entrar = gr.Textbox(label="Sala", placeholder="Ej. ProyectoX")
-                    clave_entrar = gr.Textbox(label="Clave", placeholder="Ej. 1234", type="password")
-                    nombre_usuario = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo")
-                    with gr.Row():
-                        mensaje_priv = gr.Textbox(label="Mensaje", placeholder="Escribe algo...", scale=4)
-                        boton_enviar_priv = gr.Button("Enviar", variant="primary", scale=1)
-                with gr.Column(scale=1):
-                    gr.Markdown("#### Crear sala")
-                    nombre_crear = gr.Textbox(label="Nombre de la sala", placeholder="Ej. ProyectoX")
-                    clave_crear = gr.Textbox(label="Clave", placeholder="Ej. 1234")
-                    boton_crear = gr.Button("Crear sala", variant="secondary")
-                    estado_priv = gr.Markdown()
-
+            
+            with gr.Group(visible=True) as grupo_entrada_priv:
+                gr.Markdown("#### Crear sala")
+                nombre_crear = gr.Textbox(label="Nombre de la sala", placeholder="Ej. ProyectoX")
+                clave_crear = gr.Textbox(label="Clave", placeholder="Ej. 1234")
+                boton_crear = gr.Button("Crear sala", variant="secondary")
+                
+                gr.Markdown("#### Entrar a una sala")
+                nombre_entrar = gr.Textbox(label="Nombre de la sala", placeholder="Ej. ProyectoX")
+                clave_entrar = gr.Textbox(label="Clave", placeholder="Ej. 1234", type="password")
+                boton_entrar_priv = gr.Button("Entrar a la sala", variant="primary")
+            
+            with gr.Group(visible=False) as grupo_chat_priv:
+                chat_priv = gr.Chatbot(label="Chat de la sala", height=400)
+                nombre_usuario = gr.Textbox(label="Tu nombre", placeholder="Ej. Gerardo")
+                with gr.Row():
+                    mensaje_priv = gr.Textbox(label="Mensaje", placeholder="Escribe algo...", scale=4)
+                    boton_enviar_priv = gr.Button("Enviar", variant="primary", scale=1)
+            
+            estado_priv = gr.Markdown()
+            
             boton_crear.click(crear_privada, [nombre_crear, clave_crear], [estado_priv])
-            boton_enviar_priv.click(enviar_privada, [nombre_entrar, nombre_usuario, mensaje_priv, clave_entrar], [estado_priv, chat_priv])
-            mensaje_priv.submit(enviar_privada, [nombre_entrar, nombre_usuario, mensaje_priv, clave_entrar], [estado_priv, chat_priv])
+            boton_entrar_priv.click(entrar_privada, [nombre_entrar, clave_entrar], [grupo_entrada_priv, grupo_chat_priv, estado_priv])
+            boton_enviar_priv.click(enviar_privada, [nombre_entrar, nombre_usuario, mensaje_priv], [estado_priv, chat_priv])
+            mensaje_priv.submit(enviar_privada, [nombre_entrar, nombre_usuario, mensaje_priv], [estado_priv, chat_priv])
             timer_priv = gr.Timer(3.0)
             timer_priv.tick(ver_privada, [nombre_entrar, clave_entrar], [chat_priv])
 
