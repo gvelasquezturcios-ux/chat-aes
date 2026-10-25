@@ -185,35 +185,40 @@ def descifrar(cifrado, clave, nk):
         raise ValueError("La contraseña es incorrecta o el mensaje fue alterado.")
     return quitar_relleno(datos)
 
-historial_mensajes = []
+# --- SALAS DE CHAT (cada contraseña es una sala independiente) ---
+historial_salas = {}
 
-def formatear_historial(contrasena=None, variante="AES-128"):
-    if not historial_mensajes:
-        return "No hay mensajes aún."
+def obtener_historial(contrasena):
+    return historial_salas.setdefault(contrasena, [])
+
+def formatear_historial(contrasena, variante="AES-128"):
+    if not contrasena:
+        return "Escribe una contraseña para ver los mensajes de la sala."
     
+    historial = obtener_historial(contrasena)
+    if not historial:
+        return "No hay mensajes aún en esta sala."
+    
+    nk = {"AES-128": 4, "AES-192": 6, "AES-256": 8}[variante]
+    clave = hashlib.sha256(contrasena.encode()).digest()[:nk*4]
     lineas = []
-    if contrasena:
-        nk = {"AES-128": 4, "AES-192": 6, "AES-256": 8}[variante]
-        clave = hashlib.sha256(contrasena.encode()).digest()[:nk*4]
     
-    for msg in historial_mensajes:
+    for msg in historial:
         lineas.append(f"[{msg['hora']}] {msg['nombre']}:")
         lineas.append(f"  Cifrado (hex): {msg['cifrado']}")
-        
-        if contrasena:
-            try:
-                cifrado_bytes = bytes.fromhex(msg['cifrado'])
-                descifrado = descifrar(cifrado_bytes, clave, nk)
-                lineas.append(f"  Descifrado: {descifrado.decode('utf-8', errors='replace')}")
-            except Exception:
-                lineas.append("  Descifrado: ❌ Contraseña incorrecta")
+        try:
+            cifrado_bytes = bytes.fromhex(msg['cifrado'])
+            descifrado = descifrar(cifrado_bytes, clave, nk)
+            lineas.append(f"  Descifrado: {descifrado.decode('utf-8', errors='replace')}")
+        except Exception:
+            pass
         lineas.append("")
     
     return "\n".join(lineas)
 
 def enviar_mensaje(nombre, mensaje, contrasena, variante):
     if not nombre or not mensaje or not contrasena:
-        return "Escribe tu nombre, un mensaje y la contraseña.", formatear_historial()
+        return "Escribe tu nombre, un mensaje y la contraseña.", formatear_historial(contrasena, variante)
 
     nk = {"AES-128": 4, "AES-192": 6, "AES-256": 8}[variante]
     clave = hashlib.sha256(contrasena.encode()).digest()[:nk*4]
@@ -221,7 +226,7 @@ def enviar_mensaje(nombre, mensaje, contrasena, variante):
     cifrado = cifrar(mensaje.encode(), clave, nk)
     hex_cifrado = cifrado.hex().upper()
     
-    historial_mensajes.append({
+    obtener_historial(contrasena).append({
         "nombre": nombre,
         "cifrado": hex_cifrado,
         "hora": time.strftime("%H:%M:%S")
@@ -233,7 +238,7 @@ def actualizar_chat(contrasena, variante):
     return formatear_historial(contrasena, variante)
 
 with gr.Blocks(title="Chat AES") as demo:
-    gr.Markdown("# Chat Cifrado con AES\nTodos los mensajes viajan cifrados. Solo quienes tengan la contraseña pueden leerlos.")
+    gr.Markdown("# Chat Cifrado con AES\nCada contraseña crea una sala independiente. Solo quienes tengan la misma contraseña verán el texto claro; los demás solo verán el hexadecimal.")
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -248,7 +253,7 @@ with gr.Blocks(title="Chat AES") as demo:
             estado = gr.Textbox(label="Estado", interactive=False)
 
         with gr.Column(scale=2):
-            gr.Markdown("### Historial del chat")
+            gr.Markdown("### Historial de la sala")
             chat = gr.Textbox(label="Mensajes", lines=25, interactive=False)
             boton_actualizar = gr.Button("Actualizar chat")
 
